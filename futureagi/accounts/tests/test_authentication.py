@@ -5,10 +5,12 @@ Tests for login, token refresh, and authentication flows.
 """
 
 from datetime import timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.cache import cache
 from django.utils import timezone
+from django_redis.exceptions import ConnectionInterrupted
 from rest_framework import status
 
 from accounts.authentication import generate_encrypted_message
@@ -260,3 +262,25 @@ class TestAuthenticatedEndpoints:
         response = api_client.get("/accounts/user-info/")
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["email"] == user.email
+
+    def test_cache_error_falls_back_to_database(self, api_client, user):
+        """A Redis timeout during token auth is a cache miss, not a bad token."""
+        login_response = api_client.post(
+            "/accounts/token/",
+            {"email": user.email, "password": "testpassword123"},
+            format="json",
+        )
+        broken_cache = MagicMock()
+        broken_cache.get.side_effect = ConnectionInterrupted(connection=None)
+        broken_cache.set.side_effect = ConnectionInterrupted(connection=None)
+
+        api_client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {login_response.json()['access']}"
+        )
+        with patch("accounts.authentication.cache", broken_cache):
+            response = api_client.get("/accounts/user-info/")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["email"] == user.email
+        broken_cache.get.assert_called_once()
+        broken_cache.set.assert_called_once()

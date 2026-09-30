@@ -14,6 +14,8 @@ from django.core.cache import cache
 from django.db import DatabaseError, IntegrityError, InterfaceError, OperationalError
 from django.http import JsonResponse
 from django.utils import timezone
+from django_redis.exceptions import ConnectionInterrupted
+from redis.exceptions import RedisError
 from rest_framework import status
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import (
@@ -875,6 +877,16 @@ def decrypt_message(encrypted_message: str) -> dict[str, Any]:
         raise AuthenticationFailed("Invalid token format") from ex
 
 
+def _token_cache(operation, *args, **kwargs):
+    # Redis being slow or down says nothing about the token, so a cache error
+    # counts as a miss and the token is checked against the database instead.
+    try:
+        return operation(*args, **kwargs)
+    except (ConnectionInterrupted, RedisError):
+        logger.warning("access_token_cache_unavailable", exc_info=True)
+        return None
+
+
 def decode_token(token: str):
     try:
         if not token:
@@ -883,7 +895,7 @@ def decode_token(token: str):
         decrypted_token_obj = decrypt_message(token)
         user_id = decrypted_token_obj.get("user_id")
         token_id = decrypted_token_obj.get("id")
-        cache_data = cache.get(f"access_token_{token_id}")
+        cache_data = _token_cache(cache.get, f"access_token_{token_id}")
 
         if cache_data:
             user = cache_data.get("user")
@@ -891,7 +903,8 @@ def decode_token(token: str):
             # Ensure organization is loaded to prevent sync-in-async errors later.
             if "organization" not in user._state.fields_cache:
                 user = User.objects.select_related("organization").get(pk=user.pk)
-            cache.set(
+            _token_cache(
+                cache.set,
                 f"access_token_{token_id}",
                 {"token": token, "user": user},
                 timeout=AUTH_TOKEN_EXPIRATION_TIME_IN_MINUTES * 60,
@@ -933,7 +946,8 @@ def decode_token(token: str):
         auth_token_obj.last_used_at = timezone.now()
         auth_token_obj.save()
 
-        cache.set(
+        _token_cache(
+            cache.set,
             f"access_token_{auth_token_obj.id}",
             {"token": token, "user": user},
             timeout=AUTH_TOKEN_EXPIRATION_TIME_IN_MINUTES * 60,
