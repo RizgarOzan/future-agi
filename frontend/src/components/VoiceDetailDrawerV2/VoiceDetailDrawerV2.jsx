@@ -71,7 +71,9 @@ const VoiceDetailDrawerV2 = ({
   // the call body so it fits the host's layout.
   embedded = false,
   hiddenActionIds = [],
+  hidePathTabs = false,
   hideAnnotationTab = false,
+  showFixWithFalcon = true,
 }) => {
   const queryClient = useQueryClient();
   const { observeId } = useParams();
@@ -453,7 +455,11 @@ const VoiceDetailDrawerV2 = ({
                 borderColor: "divider",
               }}
             >
-              <VoiceLeftPanel data={data} scenarioId={scenarioId} />
+              <VoiceLeftPanel
+                data={data}
+                scenarioId={scenarioId}
+                hidePathTabs={hidePathTabs}
+              />
             </Box>
 
             {/* Resizable divider */}
@@ -505,26 +511,21 @@ const VoiceDetailDrawerV2 = ({
                 onAction={handleVoiceAction}
                 hiddenActionIds={hiddenActionIds}
                 hideAnnotationTab={hideAnnotationTab}
+                showFixWithFalcon={showFixWithFalcon}
               />
             </Box>
           </>
         )}
       </Box>
 
-      {/* Share dialog — Observe voice calls share their trace and fall back
-          to the voice full-page route; simulation calls share their
-          CallExecution and fall back to the current page URL. */}
+      {/* Share dialog — Observe voice calls share their trace; simulation
+          calls share their CallExecution. */}
       {shareResource && (
         <ShareDialog
           open={shareDialogOpen}
           onClose={() => setShareDialogOpen(false)}
           resourceType={shareResource.resourceType}
           resourceId={shareResource.resourceId}
-          fallbackShareUrl={
-            shareResource.resourceType === "trace" && projectId
-              ? `${window.location.origin}/dashboard/observe/${projectId}/voice/${shareResource.resourceId}`
-              : undefined
-          }
         />
       )}
 
@@ -626,7 +627,9 @@ VoiceDetailDrawerV2.propTypes = {
   initialFullscreen: PropTypes.bool,
   embedded: PropTypes.bool,
   hiddenActionIds: PropTypes.arrayOf(PropTypes.string),
+  hidePathTabs: PropTypes.bool,
   hideAnnotationTab: PropTypes.bool,
+  showFixWithFalcon: PropTypes.bool,
 };
 
 export default VoiceDetailDrawerV2;
