@@ -315,6 +315,10 @@ async function runGeneration(schemaPath) {
     return source.slice(0, start) + rewritten + source.slice(end);
   }
 
+  const interruptionNullableFields = {
+    RunCallApi: ["avg_stop_time_after_interruption", "ai_interruption_count"],
+    GroupAggregatesApi: ["avg_stop_time_after_interruption", "ai_interruptions"],
+  };
   const voiceCallDetailNullableFields = [
     "provider_call_id",
     "phone_number",
@@ -363,6 +367,18 @@ async function runGeneration(schemaPath) {
   const schemasOutputPath = path.join(outputDir, "api.schemas.ts");
   if (fs.existsSync(schemasOutputPath)) {
     let schemas = fs.readFileSync(schemasOutputPath, "utf8");
+
+    for (const [typeName, fields] of Object.entries(interruptionNullableFields)) {
+      for (const field of fields) {
+        schemas = assertReplaceInNamedBlock(
+          schemas,
+          `export interface ${typeName} {`,
+          `${field}: number;`,
+          `${field}: number | null;`,
+          `${typeName}.${field} nullable`,
+        );
+      }
+    }
 
     // x-string-or-array: type aliases preceded by "Plain text string or array
     // of content-part objects." are generated as { [key: string]: unknown } but
@@ -467,6 +483,14 @@ export type ${jsonAlias} = JsonValueApi;`,
         `TraceVoiceCallDetailResultApi.${field} nullable`,
       );
     }
+
+    schemas = assertReplaceInNamedBlock(
+      schemas,
+      "export interface SubGoalResultApi {",
+      "passed: boolean;",
+      "passed: boolean | null;",
+      "SubGoalResultApi.passed nullable",
+    );
 
     const columnConfigNullableFields = [
       ["group_by?: string;", "group_by?: string | null;"],
@@ -655,11 +679,58 @@ export type ${jsonAlias} = JsonValueApi;`,
       "APIKeyBulkItemApi.expires_at nullable",
     );
 
+    // The compact conversation record passes provider values on as they were
+    // logged, and the times it computes are null when the provider gave none.
+    schemas = assertReplaceRegex(
+      schemas,
+      /(export type Conversation(?:CallAgent|Call|Analysis|Latency|Turn)Api\w+ = )\{ \[key: string\]: unknown \};/g,
+      "$1JsonValueApi;",
+      "conversation record JSON values → recursive JSON value",
+    );
+    for (const recordType of [
+      "ConversationVariablesApiConfigured",
+      "ConversationVariablesApiCollected",
+      "ConversationAnalysisApiFlags",
+    ]) {
+      schemas = assertReplace(
+        schemas,
+        `export type ${recordType} = {[key: string]: { [key: string]: unknown }};`,
+        `export type ${recordType} = { [key: string]: JsonValueApi };`,
+        `${recordType} → recursive JSON values`,
+      );
+    }
+    for (const [typeName, field] of [
+      ["ConversationEvidenceRowApi", "end_time"],
+      ["ConversationDossierApi", "agent_instructions"],
+      ["ConversationCallApi", "duration_seconds"],
+      ["ConversationTurnApi", "start"],
+      ["ConversationTurnApi", "end"],
+      ["ConversationTurnApi", "at"],
+    ]) {
+      schemas = assertReplaceRegexInNamedBlock(
+        schemas,
+        `export interface ${typeName} {`,
+        new RegExp(`(^\\s*${field}\\??: [^;]+)(;)$`, "m"),
+        "$1 | null$2",
+        `${typeName}.${field} nullable`,
+      );
+    }
+
     fs.writeFileSync(schemasOutputPath, schemas);
   }
 
   if (fs.existsSync(zodOutputPath)) {
     let zod = fs.readFileSync(zodOutputPath, "utf8");
+
+    for (const field of new Set(Object.values(interruptionNullableFields).flat())) {
+      zod = assertReplaceInNamedBlock(
+        zod,
+        "export const SimulateV3TestExecutionCallsResponse =",
+        `"${field}": zod.number()`,
+        `"${field}": zod.number().nullable()`,
+        `SimulateV3TestExecutionCallsResponse.${field} nullable`,
+      );
+    }
 
     zod = assertReplace(
       zod,
@@ -723,6 +794,31 @@ const jsonValueSchema: zod.ZodType<JsonValue> =
         `${exportName} JSON cells → recursive JSON value`,
       );
     }
+    const conversationEvidenceResponse =
+      "export const TracerInternalErrorFeedV2AttemptsConversationEvidenceCreateResponse = zod.object({";
+    zod = assertReplaceRegexInNamedBlock(
+      zod,
+      conversationEvidenceResponse,
+      /zod\.object\(\{\n\n\}\)\.passthrough\(\)(?=(?:\.(?:optional|nullish|nullable)\(\)|\.default\([^)]*\))*\.describe\('Any valid JSON value\.'\))/g,
+      "jsonValueSchema",
+      "conversation evidence JSON values → recursive JSON value",
+    );
+    for (const [anchor, label] of [
+      [/("end_time": zod\.string\(\)\.datetime\([^)]*\))/, "end_time"],
+      [/("agent_instructions": zod\.string\(\))/, "agent_instructions"],
+      [/("duration_seconds": zod\.number\(\))/, "duration_seconds"],
+      [/("start": zod\.number\(\))/, "turn start"],
+      [/("end": zod\.number\(\))/, "turn end"],
+      [/("at": zod\.number\(\))/, "turn at"],
+    ]) {
+      zod = assertReplaceRegexInNamedBlock(
+        zod,
+        conversationEvidenceResponse,
+        anchor,
+        "$1.nullable()",
+        `conversation evidence ${label} nullable`,
+      );
+    }
     zod = assertReplaceRegexInNamedBlock(
       zod,
       "export const TracerTraceVoiceCallDetailResponse = zod.object({",
@@ -760,6 +856,19 @@ const jsonValueSchema: zod.ZodType<JsonValue> =
         '"next_cursor": zod.string().min(1),',
         '"next_cursor": zod.string().min(1).nullable(),',
         `${responseName}.next_cursor nullable`,
+      );
+    }
+
+    for (const responseName of [
+      "SimulateV3CallExecutionDetailResponse",
+      "SimulateV3TestExecutionCallsResponse",
+    ]) {
+      zod = assertReplaceRegexInNamedBlock(
+        zod,
+        `export const ${responseName} = zod.object({`,
+        /("sub_goal_results": zod\.array\(zod\.object\(\{[\s\S]*?"passed": )zod\.boolean\(\)/,
+        "$1zod.boolean().nullable()",
+        `${responseName}.sub_goal_results.passed nullable`,
       );
     }
 
